@@ -16,18 +16,21 @@ use ratatui::{
 
 use crate::app::{App, DAILY_TARGET, Tab};
 
-const BG: Color = Color::Rgb(7, 9, 14);
-const PANEL: Color = Color::Rgb(13, 18, 27);
-const PANEL_BRIGHT: Color = Color::Rgb(18, 25, 37);
-const BORDER: Color = Color::Rgb(39, 51, 70);
-const TEXT: Color = Color::Rgb(231, 237, 244);
-const MUTED: Color = Color::Rgb(118, 132, 153);
-const TRACK: Color = Color::Rgb(42, 52, 67);
-const MINT: Color = Color::Rgb(103, 245, 187);
-const CYAN: Color = Color::Rgb(93, 219, 255);
-const AMBER: Color = Color::Rgb(255, 196, 91);
-const HOT: Color = Color::Rgb(255, 91, 142);
-const RED: Color = Color::Rgb(255, 102, 102);
+// ANSI colors deliberately inherit the active terminal theme.
+const BG: Color = Color::Reset;
+const PANEL: Color = Color::Reset;
+const PANEL_BRIGHT: Color = Color::Reset;
+const ODOMETER_BG: Color = Color::Black;
+const INK: Color = Color::Black;
+const BORDER: Color = Color::DarkGray;
+const TEXT: Color = Color::White;
+const MUTED: Color = Color::Gray;
+const TRACK: Color = Color::DarkGray;
+const LIME: Color = Color::LightGreen;
+const GOLD: Color = Color::Yellow;
+const AMBER: Color = Color::LightYellow;
+const REDLINE: Color = Color::Red;
+const RED: Color = Color::LightRed;
 
 struct Stat<'a> {
     label: &'a str,
@@ -37,7 +40,15 @@ struct Stat<'a> {
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
-    frame.render_widget(Block::new().style(Style::default().bg(BG)), area);
+    frame.render_widget(
+        Block::new().style(
+            Style::default()
+                .fg(TEXT)
+                .bg(BG)
+                .add_modifier(Modifier::BOLD),
+        ),
+        area,
+    );
 
     if area.width < 44 || area.height < 18 {
         render_too_small(frame, area);
@@ -63,7 +74,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App) {
-    frame.render_widget(Block::new().style(Style::default().bg(PANEL)), area);
+    frame.render_widget(
+        Block::new().style(
+            Style::default()
+                .fg(TEXT)
+                .bg(PANEL)
+                .add_modifier(Modifier::BOLD),
+        ),
+        area,
+    );
     let columns =
         Layout::horizontal([Constraint::Percentage(56), Constraint::Percentage(44)]).split(area);
     let now = Local::now();
@@ -74,29 +93,29 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled(
                     " KP",
                     Style::default()
-                        .fg(BG)
-                        .bg(MINT)
+                        .fg(INK)
+                        .bg(GOLD)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    "  KEYPULSE",
+                    "  KEYPULSE / ODOMETER",
                     Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
                 ),
             ]),
             Line::from(Span::styled(
                 format!(" {}", now.format("%a  %b %-d  %H:%M")).to_uppercase(),
-                Style::default().fg(MUTED),
+                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
             )),
         ]),
         columns[0],
     );
 
     let (status, color, detail) = if app.save_error.is_some() {
-        ("SAVE ERROR", RED, "COUNTS IN MEMORY")
+        ("SERVICE", RED, "COUNTS IN MEMORY")
     } else if app.devices.is_empty() {
-        ("INPUT LOCKED", RED, "NO /DEV/INPUT ACCESS")
+        ("IGNITION LOCKED", RED, "NO INPUT ACCESS")
     } else {
-        ("LIVE", MINT, "SQLITE / LOCAL")
+        ("ENGINE ON", LIME, "LOCAL TRIP LOG")
     };
     frame.render_widget(
         Paragraph::new(vec![
@@ -104,7 +123,10 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
                 status,
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             )),
-            Line::from(Span::styled(detail, Style::default().fg(MUTED))),
+            Line::from(Span::styled(
+                detail,
+                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            )),
         ])
         .alignment(Alignment::Right),
         columns[1],
@@ -113,14 +135,24 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_tabs(frame: &mut Frame, area: Rect, selected: Tab) {
     let tabs = Tabs::new([
-        Line::from(" 01 TODAY "),
-        Line::from(" 02 WEEK "),
-        Line::from(" 03 REPORT "),
+        Line::from(" 01 DASH "),
+        Line::from(" 02 LAPS "),
+        Line::from(" 03 LOGBOOK "),
     ])
     .select(selected.index())
     .divider(Span::styled(" ", Style::default().fg(BORDER)))
-    .style(Style::default().fg(MUTED).bg(BG))
-    .highlight_style(Style::default().fg(BG).bg(HOT).add_modifier(Modifier::BOLD))
+    .style(
+        Style::default()
+            .fg(MUTED)
+            .bg(BG)
+            .add_modifier(Modifier::BOLD),
+    )
+    .highlight_style(
+        Style::default()
+            .fg(INK)
+            .bg(GOLD)
+            .add_modifier(Modifier::BOLD),
+    )
     .block(Block::new().borders(Borders::BOTTOM).border_style(BORDER));
     frame.render_widget(tabs, area);
 }
@@ -137,7 +169,7 @@ fn render_today(frame: &mut Frame, area: Rect, app: &mut App) {
         .max_by_key(|(_, count)| *count)
         .map(|(hour, _)| hour);
 
-    let narrow = area.width < 76;
+    let narrow = area.width < 110;
     let sections = if narrow {
         Layout::vertical([Constraint::Min(10), Constraint::Length(7)]).split(area)
     } else {
@@ -153,17 +185,17 @@ fn render_today(frame: &mut Frame, area: Rect, app: &mut App) {
     render_stat_strip(
         frame,
         sections[1],
-        " LIVE READOUT ",
+        " PIT TELEMETRY ",
         &[
             Stat {
-                label: "PACE / MIN",
+                label: "KPM",
                 value: format_count(pace as u64),
-                color: CYAN,
+                color: GOLD,
             },
             Stat {
                 label: "GOAL",
                 value: format!("{:.0}%", total as f64 / DAILY_TARGET as f64 * 100.0),
-                color: MINT,
+                color: LIME,
             },
             Stat {
                 label: "PEAK",
@@ -171,9 +203,9 @@ fn render_today(frame: &mut Frame, area: Rect, app: &mut App) {
                 color: AMBER,
             },
             Stat {
-                label: "KEYBOARDS",
+                label: "INPUTS",
                 value: device_value,
-                color: if app.devices.is_empty() { RED } else { HOT },
+                color: if app.devices.is_empty() { RED } else { REDLINE },
             },
         ],
         narrow,
@@ -183,15 +215,16 @@ fn render_today(frame: &mut Frame, area: Rect, app: &mut App) {
 fn render_speedometer(frame: &mut Frame, area: Rect, total: u64) {
     let progress = (total as f64 / DAILY_TARGET as f64).clamp(0.0, 1.0);
     let odometer = format_odometer(total);
+    let show_large_odometer = area.width >= 32 && area.height >= 18 && total < 1_000_000;
     let target = format!(
-        "{:.0}%  /  {} KEY TARGET",
+        "TRIP  {:.0}%  /  {}",
         progress * 100.0,
         format_count(DAILY_TARGET)
     );
     let x_per_cell = 2.5 / f64::from(area.width.saturating_sub(2).max(1));
 
     let canvas = Canvas::default()
-        .block(panel(" TODAY // INPUT VELOCITY "))
+        .block(panel(" KEYSTROKE SPEEDOMETER "))
         .marker(Marker::Braille)
         .x_bounds([-1.25, 1.25])
         .y_bounds([-1.02, 1.02])
@@ -203,17 +236,26 @@ fn render_speedometer(frame: &mut Frame, area: Rect, total: u64) {
                 let to = (segment + 1) as f64 / segments as f64;
                 let a1 = angle_for(from);
                 let a2 = angle_for(to);
-                let color = if to <= progress {
-                    if to > 0.82 { HOT } else { MINT }
+                let bezel_color = if to > 0.82 { REDLINE } else { GOLD };
+                context.draw(&CanvasLine {
+                    x1: 0.94 * a1.cos(),
+                    y1: center_y + 0.94 * a1.sin(),
+                    x2: 0.94 * a2.cos(),
+                    y2: center_y + 0.94 * a2.sin(),
+                    color: bezel_color,
+                });
+
+                let progress_color = if to <= progress {
+                    if to > 0.82 { REDLINE } else { LIME }
                 } else {
                     TRACK
                 };
                 context.draw(&CanvasLine {
-                    x1: 0.90 * a1.cos(),
-                    y1: center_y + 0.90 * a1.sin(),
-                    x2: 0.90 * a2.cos(),
-                    y2: center_y + 0.90 * a2.sin(),
-                    color,
+                    x1: 0.86 * a1.cos(),
+                    y1: center_y + 0.86 * a1.sin(),
+                    x2: 0.86 * a2.cos(),
+                    y2: center_y + 0.86 * a2.sin(),
+                    color: progress_color,
                 });
             }
 
@@ -233,7 +275,10 @@ fn render_speedometer(frame: &mut Frame, area: Rect, total: u64) {
                     context.print(
                         0.58 * angle.cos() - label.len() as f64 * x_per_cell / 2.0,
                         center_y + 0.58 * angle.sin(),
-                        Span::styled(label, Style::default().fg(MUTED)),
+                        Span::styled(
+                            label,
+                            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+                        ),
                     );
                 }
             }
@@ -244,35 +289,74 @@ fn render_speedometer(frame: &mut Frame, area: Rect, total: u64) {
                 y1: center_y - 0.10 * needle_angle.sin(),
                 x2: 0.62 * needle_angle.cos(),
                 y2: center_y + 0.62 * needle_angle.sin(),
-                color: HOT,
+                color: AMBER,
             });
             context.draw(&Circle {
                 x: 0.0,
                 y: center_y,
-                radius: 0.05,
-                color: HOT,
+                radius: 0.07,
+                color: GOLD,
             });
 
-            context.print(
-                -(odometer.len() as f64) * x_per_cell / 2.0,
-                -0.27,
-                Span::styled(
-                    odometer.clone(),
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                ),
-            );
-            context.print(
-                -5.0 * x_per_cell,
-                -0.42,
-                Span::styled("KEYSTROKES", Style::default().fg(MUTED)),
-            );
+            if !show_large_odometer {
+                context.print(
+                    -(odometer.len() as f64) * x_per_cell / 2.0,
+                    -0.27,
+                    Span::styled(
+                        odometer.clone(),
+                        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                    ),
+                );
+                context.print(
+                    -5.0 * x_per_cell,
+                    -0.42,
+                    Span::styled(
+                        "KEYS TODAY",
+                        Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+                    ),
+                );
+            }
             context.print(
                 -(target.len() as f64) * x_per_cell / 2.0,
                 -0.70,
-                Span::styled(target.clone(), Style::default().fg(MINT)),
+                Span::styled(target.clone(), Style::default().fg(LIME)),
             );
         });
     frame.render_widget(canvas, area);
+    if show_large_odometer {
+        render_big_odometer(frame, area, total);
+    }
+}
+
+fn render_big_odometer(frame: &mut Frame, area: Rect, total: u64) {
+    let width = 27.min(area.width.saturating_sub(2));
+    let height = 7;
+    let y = area
+        .y
+        .saturating_add(area.height.saturating_mul(54) / 100)
+        .min(area.bottom().saturating_sub(height + 1));
+    let display = Rect {
+        x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
+        y,
+        width,
+        height,
+    };
+    let block = Block::new()
+        .title(Span::styled(
+            " TRIP / TODAY ",
+            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(GOLD)
+        .style(Style::default().bg(ODOMETER_BG));
+    frame.render_widget(
+        Paragraph::new(odometer_art(total))
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(TEXT).bg(ODOMETER_BG))
+            .block(block),
+        display,
+    );
 }
 
 fn render_week(frame: &mut Frame, area: Rect, app: &App) {
@@ -300,17 +384,17 @@ fn render_week(frame: &mut Frame, area: Rect, app: &App) {
     render_stat_strip(
         frame,
         sections[0],
-        " 7-DAY SIGNAL ",
+        " 7-DAY LAP DATA ",
         &[
             Stat {
                 label: "TOTAL",
                 value: compact_count(total),
-                color: MINT,
+                color: LIME,
             },
             Stat {
                 label: "DAILY AVG",
                 value: compact_count(average),
-                color: CYAN,
+                color: TEXT,
             },
             Stat {
                 label: "BEST",
@@ -320,7 +404,7 @@ fn render_week(frame: &mut Frame, area: Rect, app: &App) {
             Stat {
                 label: "DELTA",
                 value: format!("{change:+.0}%"),
-                color: if change >= 0.0 { MINT } else { RED },
+                color: if change >= 0.0 { LIME } else { RED },
             },
         ],
         false,
@@ -330,12 +414,12 @@ fn render_week(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .enumerate()
         .map(|(index, (date, value))| {
-            let color = if index == 6 { HOT } else { CYAN };
+            let color = if index == 6 { LIME } else { GOLD };
             let bar = Bar::default()
                 .value(*value)
                 .label(Line::from(date.format("%a").to_string()))
                 .style(Style::default().fg(color))
-                .value_style(Style::default().fg(BG).bg(color));
+                .value_style(Style::default().fg(INK).bg(color));
             if sections[1].height >= 9 {
                 bar.text_value(compact_count(*value))
             } else {
@@ -346,7 +430,7 @@ fn render_week(frame: &mut Frame, area: Rect, app: &App) {
     let bar_width = ((sections[1].width.saturating_sub(8) / 7).saturating_sub(1)).clamp(2, 8);
     frame.render_widget(
         BarChart::default()
-            .block(panel(" DAILY LOAD "))
+            .block(panel(" DAILY DISTANCE "))
             .data(BarGroup::default().bars(&bars))
             .bar_width(bar_width)
             .bar_gap(1)
@@ -357,17 +441,17 @@ fn render_week(frame: &mut Frame, area: Rect, app: &App) {
                     .unwrap_or(1)
                     .max(1),
             )
-            .label_style(Style::default().fg(MUTED)),
+            .label_style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD)),
         sections[1],
     );
 
     let hours = app.stats.hours_on(today);
     frame.render_widget(
         Sparkline::default()
-            .block(panel(" TODAY PULSE  //  00 > 23 "))
+            .block(panel(" TODAY RPM  //  00 > 23 "))
             .data(hours)
             .max(hours.iter().copied().max().unwrap_or(1).max(1))
-            .style(Style::default().fg(HOT)),
+            .style(Style::default().fg(REDLINE)),
         sections[2],
     );
 }
@@ -390,17 +474,17 @@ fn render_report(frame: &mut Frame, area: Rect, app: &App) {
     render_stat_strip(
         frame,
         sections[0],
-        " LONG RANGE ",
+        " SEASON LOG ",
         &[
             Stat {
                 label: "ALL TIME",
                 value: compact_count(all_time),
-                color: MINT,
+                color: LIME,
             },
             Stat {
                 label: "30D AVG",
                 value: compact_count(average),
-                color: CYAN,
+                color: TEXT,
             },
             Stat {
                 label: "RECORD",
@@ -410,7 +494,7 @@ fn render_report(frame: &mut Frame, area: Rect, app: &App) {
             Stat {
                 label: "STREAK",
                 value: format!("{}D", app.current_streak()),
-                color: HOT,
+                color: REDLINE,
             },
         ],
         false,
@@ -430,21 +514,21 @@ fn render_report(frame: &mut Frame, area: Rect, app: &App) {
     let dataset = Dataset::default()
         .marker(symbols::Marker::Braille)
         .graph_type(GraphType::Line)
-        .style(Style::default().fg(MINT))
+        .style(Style::default().fg(LIME))
         .data(&trend);
     frame.render_widget(
         Chart::new(vec![dataset])
-            .block(panel(" 30-DAY TRAJECTORY "))
+            .block(panel(" 30-DAY PACE "))
             .x_axis(
                 Axis::default()
                     .bounds([0.0, 29.0])
-                    .style(Style::default().fg(MUTED))
+                    .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD))
                     .labels(["-30D", "-15D", "NOW"]),
             )
             .y_axis(
                 Axis::default()
                     .bounds([0.0, max_trend as f64])
-                    .style(Style::default().fg(MUTED))
+                    .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD))
                     .labels([
                         "0".to_owned(),
                         compact_count(max_trend / 2),
@@ -457,7 +541,7 @@ fn render_report(frame: &mut Frame, area: Rect, app: &App) {
     let hours = app.stats.aggregate_hours(today, 30);
     frame.render_widget(
         Sparkline::default()
-            .block(panel(" ACTIVITY MAP  //  00 > 23 "))
+            .block(panel(" SHIFT MAP  //  00 > 23 "))
             .data(hours)
             .max(hours.iter().copied().max().unwrap_or(1).max(1))
             .style(Style::default().fg(AMBER)),
@@ -499,14 +583,22 @@ fn render_stat_strip(
 fn render_stat(frame: &mut Frame, area: Rect, stat: &Stat<'_>) {
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(Span::styled(stat.label, Style::default().fg(MUTED))),
+            Line::from(Span::styled(
+                stat.label,
+                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            )),
             Line::from(Span::styled(
                 &stat.value,
                 Style::default().fg(stat.color).add_modifier(Modifier::BOLD),
             )),
         ])
         .alignment(Alignment::Center)
-        .style(Style::default().bg(PANEL_BRIGHT)),
+        .style(
+            Style::default()
+                .fg(TEXT)
+                .bg(PANEL_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        ),
         area,
     );
 }
@@ -517,9 +609,15 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" 1-3", Style::default().fg(TEXT)),
-            Span::styled(" TABS   ", Style::default().fg(MUTED)),
+            Span::styled(
+                " MODE   ",
+                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("Q", Style::default().fg(TEXT)),
-            Span::styled(" CLOSE", Style::default().fg(MUTED)),
+            Span::styled(
+                " PARK",
+                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            ),
         ])),
         columns[0],
     );
@@ -528,9 +626,11 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             if app.devices.is_empty() {
                 "INPUT LOCKED"
             } else {
-                "PRIVATE / SQLITE"
+                "TRIP LOG / SQLITE"
             },
-            Style::default().fg(if app.devices.is_empty() { RED } else { MUTED }),
+            Style::default()
+                .fg(if app.devices.is_empty() { RED } else { MUTED })
+                .add_modifier(Modifier::BOLD),
         ))
         .alignment(Alignment::Right),
         columns[1],
@@ -541,12 +641,17 @@ fn panel(title: &'static str) -> Block<'static> {
     Block::new()
         .title(Span::styled(
             title,
-            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(BORDER)
-        .style(Style::default().bg(PANEL))
+        .style(
+            Style::default()
+                .fg(TEXT)
+                .bg(PANEL)
+                .add_modifier(Modifier::BOLD),
+        )
 }
 
 fn render_too_small(frame: &mut Frame, area: Rect) {
@@ -554,11 +659,17 @@ fn render_too_small(frame: &mut Frame, area: Rect) {
         Paragraph::new(vec![
             Line::from(Span::styled(
                 "KEYPULSE",
-                Style::default().fg(MINT).add_modifier(Modifier::BOLD),
+                Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from(Span::styled("PANEL TOO SMALL", Style::default().fg(HOT))),
-            Line::from(Span::styled("MINIMUM 44 x 18", Style::default().fg(MUTED))),
+            Line::from(Span::styled(
+                "PANEL TOO SMALL",
+                Style::default().fg(REDLINE),
+            )),
+            Line::from(Span::styled(
+                "MINIMUM 44 x 18",
+                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            )),
         ])
         .alignment(Alignment::Center)
         .block(panel(" INPUT ODOMETER ")),
@@ -617,6 +728,35 @@ fn format_odometer(value: u64) -> String {
     }
 }
 
+fn odometer_art(value: u64) -> Vec<Line<'static>> {
+    const DIGITS: [[&str; 5]; 10] = [
+        ["███", "█ █", "█ █", "█ █", "███"],
+        [" ██", "  █", "  █", "  █", " ███"],
+        ["███", "  █", "███", "█  ", "███"],
+        ["███", "  █", " ██", "  █", "███"],
+        ["█ █", "█ █", "███", "  █", "  █"],
+        ["███", "█  ", "███", "  █", "███"],
+        ["███", "█  ", "███", "█ █", "███"],
+        ["███", "  █", "  █", "  █", "  █"],
+        ["███", "█ █", "███", "█ █", "███"],
+        ["███", "█ █", "███", "  █", "███"],
+    ];
+
+    let digits = format!("{value:06}");
+    (0..5)
+        .map(|row| {
+            let mut output = String::with_capacity(23);
+            for (index, digit) in digits.bytes().enumerate() {
+                if index > 0 {
+                    output.push(' ');
+                }
+                output.push_str(DIGITS[usize::from(digit - b'0')][row]);
+            }
+            Line::from(output)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use ratatui::{Terminal, backend::TestBackend};
@@ -626,13 +766,14 @@ mod tests {
         store::{Database, Stats},
     };
 
-    use super::{format_count, format_odometer, percent_change, render};
+    use super::{format_count, format_odometer, odometer_art, percent_change, render};
 
     #[test]
     fn formats_counts_for_display() {
         assert_eq!(format_count(0), "0");
         assert_eq!(format_count(12_345_678), "12,345,678");
         assert_eq!(format_odometer(38), "000038");
+        assert_eq!(odometer_art(38).len(), 5);
     }
 
     #[test]

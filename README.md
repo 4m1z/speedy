@@ -71,7 +71,7 @@ If `XDG_DATA_HOME` is set, the file is stored at `$XDG_DATA_HOME/keypulse/keypul
 
 ## Omarchy Side Panel
 
-The included Omarchy setup launches Keypulse in a floating 440x720 Alacritty window on the right side of the current workspace:
+The included Omarchy setup launches Keypulse in a floating 560x620 Alacritty window on the right side of the current workspace. The TUI uses ANSI colors, so its racing palette follows the active terminal theme:
 
 ```text
 Super + I
