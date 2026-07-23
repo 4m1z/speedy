@@ -270,7 +270,7 @@ fn render_speedometer(frame: &mut Frame, area: Rect, total: u64) {
                     y2: center_y + 0.81 * angle.sin(),
                     color: if tick % 5 == 0 { TEXT } else { MUTED },
                 });
-                if tick % 2 == 0 {
+                if tick > 0 && tick < 10 && tick % 2 == 0 {
                     let label = tick.to_string();
                     context.print(
                         0.58 * angle.cos() - label.len() as f64 * x_per_cell / 2.0,
