@@ -1,0 +1,20 @@
+[package]
+name = "keypulse"
+version = "0.1.0"
+edition = "2024"
+description = "A private terminal dashboard for daily keyboard activity"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+crossterm = "0.28"
+evdev = "0.13"
+ratatui = "0.29"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+lto = true
+strip = true
