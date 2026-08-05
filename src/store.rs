@@ -311,6 +311,7 @@ impl Database {
 }
 
 pub fn default_database_path() -> Result<PathBuf> {
+    // Keep the original on-disk location so upgrades retain stats and the active recorder lock.
     Ok(data_directory()?.join("keypulse.db"))
 }
 
@@ -413,12 +414,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let directory = std::env::temp_dir().join(format!(
-            "keypulse-migration-{}-{unique}",
-            std::process::id()
-        ));
+        let directory =
+            std::env::temp_dir().join(format!("speedy-migration-{}-{unique}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
-        let database_path = directory.join("keypulse.db");
+        let database_path = directory.join("speedy.db");
         let legacy_path = directory.join("stats.json");
         let date = NaiveDate::from_ymd_opt(2026, 7, 23).unwrap();
         let mut stats = Stats::default();

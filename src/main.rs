@@ -54,9 +54,9 @@ fn main() -> Result<()> {
         Command::Recorder => recorder::run(),
         Command::Stop => {
             if recorder::stop()? {
-                println!("keypulse recorder stopped");
+                println!("speedy recorder stopped");
             } else {
-                println!("keypulse recorder is not running");
+                println!("speedy recorder is not running");
             }
             Ok(())
         }
@@ -189,19 +189,19 @@ fn parse_arguments() -> Result<Command> {
     match argument.as_str() {
         "-h" | "--help" => {
             println!(
-                "keypulse {}\n\nPrivate keyboard activity dashboard\n\nUSAGE:\n    keypulse          Open the dashboard and start recording\n    keypulse --stop   Stop the background recorder\n\nThe recorder continues after the dashboard closes.\n\nKEYS:\n    1/2/3/4     Select a tab\n    Left/Right  Change tabs\n    r           Refresh now\n    q, Esc      Close the dashboard",
+                "speedy {}\n\nPrivate keyboard activity dashboard\n\nUSAGE:\n    speedy          Open the dashboard and start recording\n    speedy --stop   Stop the background recorder\n\nThe recorder continues after the dashboard closes.\n\nKEYS:\n    1/2/3/4     Select a tab\n    Left/Right  Change tabs\n    r           Refresh now\n    q, Esc      Close the dashboard",
                 env!("CARGO_PKG_VERSION")
             );
             std::process::exit(0);
         }
         "-V" | "--version" => {
-            println!("keypulse {}", env!("CARGO_PKG_VERSION"));
+            println!("speedy {}", env!("CARGO_PKG_VERSION"));
             std::process::exit(0);
         }
-        "--recorder" if std::env::var_os("KEYPULSE_RECORDER_CHILD").is_some() => {
+        "--recorder" if std::env::var_os("SPEEDY_RECORDER_CHILD").is_some() => {
             Ok(Command::Recorder)
         }
-        "--recorder" => bail!("--recorder is an internal option; run keypulse instead"),
+        "--recorder" => bail!("--recorder is an internal option; run speedy instead"),
         "--stop" => Ok(Command::Stop),
         _ => bail!("unknown argument: {argument}; try --help"),
     }

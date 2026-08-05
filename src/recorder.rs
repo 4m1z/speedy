@@ -42,11 +42,11 @@ pub fn ensure_running() -> Result<()> {
         .append(true)
         .open(&log_path)
         .with_context(|| format!("failed to open recorder log at {}", log_path.display()))?;
-    let executable = std::env::current_exe().context("failed to locate the keypulse executable")?;
+    let executable = std::env::current_exe().context("failed to locate the speedy executable")?;
     let mut command = Command::new(executable);
     command
         .arg("--recorder")
-        .env("KEYPULSE_RECORDER_CHILD", "1")
+        .env("SPEEDY_RECORDER_CHILD", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(log));
