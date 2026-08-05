@@ -1,18 +1,20 @@
 mod app;
 mod capture;
+mod recorder;
 mod store;
 mod ui;
 
 use std::{
     io::{self, Stdout},
-    sync::mpsc::Receiver,
-    thread,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
 use app::{App, Tab};
-use capture::{CaptureEvent, CaptureHandle};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
@@ -23,32 +25,70 @@ use store::{Database, default_database_path, legacy_json_path};
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
 
-fn main() -> Result<()> {
-    parse_arguments()?;
-
-    let mut database = Database::open(&default_database_path()?)?;
-    database.migrate_json(&legacy_json_path()?)?;
-    let stats = database.load_stats()?;
-    let mut app = App::new(stats, database);
-    let (capture_sender, capture_receiver) = std::sync::mpsc::channel();
-    let _capture = CaptureHandle::start(capture_sender);
-
-    let mut terminal = start_terminal()?;
-    let run_result = run(&mut terminal, &mut app, &capture_receiver);
-    let restore_result = restore_terminal(&mut terminal);
-
-    // Give the input worker a moment to deliver the key used to quit.
-    thread::sleep(Duration::from_millis(12));
-    drain_capture(&mut app, &capture_receiver);
-    let save_result = if app.is_dirty() { app.save() } else { Ok(()) };
-
-    run_result.and(restore_result).and(save_result)
+struct TerminalSession {
+    tui: Tui,
+    restored: bool,
 }
 
-fn run(tui: &mut Tui, app: &mut App, receiver: &Receiver<CaptureEvent>) -> Result<()> {
-    loop {
-        drain_capture(app, receiver);
-        app.save_if_due();
+impl TerminalSession {
+    fn restore(&mut self) -> Result<()> {
+        if self.restored {
+            return Ok(());
+        }
+        self.restored = true;
+        restore_terminal(&mut self.tui)
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        if !self.restored {
+            let _ = restore_terminal(&mut self.tui);
+        }
+    }
+}
+
+fn main() -> Result<()> {
+    match parse_arguments()? {
+        Command::Dashboard => run_dashboard(),
+        Command::Recorder => recorder::run(),
+        Command::Stop => {
+            if recorder::stop()? {
+                println!("keypulse recorder stopped");
+            } else {
+                println!("keypulse recorder is not running");
+            }
+            Ok(())
+        }
+    }
+}
+
+fn run_dashboard() -> Result<()> {
+    // Complete any one-time migration before the recorder and dashboard access SQLite together.
+    let mut database = Database::open(&default_database_path()?)?;
+    database.migrate_json(&legacy_json_path()?)?;
+    drop(database);
+
+    recorder::ensure_running()?;
+    let database = Database::open(&default_database_path()?)?;
+    let stats = database.load_stats()?;
+    let mut app = App::new(stats, database);
+    app.refresh_if_due();
+    let interrupted = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&interrupted))
+        .context("failed to install dashboard stop handler")?;
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&interrupted))
+        .context("failed to install dashboard interrupt handler")?;
+
+    let mut terminal = start_terminal()?;
+    let run_result = run(&mut terminal.tui, &mut app, &interrupted);
+    let restore_result = terminal.restore();
+    run_result.and(restore_result)
+}
+
+fn run(tui: &mut Tui, app: &mut App, interrupted: &AtomicBool) -> Result<()> {
+    while !interrupted.load(Ordering::Relaxed) {
+        app.refresh_if_due();
         tui.draw(|frame| ui::render(frame, app))?;
 
         if event::poll(Duration::from_millis(80))?
@@ -59,6 +99,7 @@ fn run(tui: &mut Tui, app: &mut App, receiver: &Receiver<CaptureEvent>) -> Resul
             return Ok(());
         }
     }
+    Ok(())
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> bool {
@@ -74,35 +115,52 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             false
         }
         (KeyCode::Char('1'), _) => {
-            app.tab = Tab::Today;
+            app.tab = Tab::Live;
             false
         }
         (KeyCode::Char('2'), _) => {
-            app.tab = Tab::Week;
+            app.tab = Tab::Daily;
             false
         }
         (KeyCode::Char('3'), _) => {
-            app.tab = Tab::Report;
+            app.tab = Tab::Hourly;
+            false
+        }
+        (KeyCode::Char('4'), _) => {
+            app.tab = Tab::Records;
+            false
+        }
+        (KeyCode::Char('r'), _) => {
+            app.refresh_now();
             false
         }
         _ => false,
     }
 }
 
-fn drain_capture(app: &mut App, receiver: &Receiver<CaptureEvent>) {
-    while let Ok(event) = receiver.try_recv() {
-        app.handle_capture(event);
-    }
-}
-
-fn start_terminal() -> Result<Tui> {
+fn start_terminal() -> Result<TerminalSession> {
     enable_raw_mode().context("failed to enable terminal raw mode")?;
     let mut stdout = io::stdout();
     if let Err(error) = execute!(stdout, EnterAlternateScreen) {
         let _ = disable_raw_mode();
         return Err(error).context("failed to enter alternate screen");
     }
-    Terminal::new(CrosstermBackend::new(stdout)).context("failed to initialize terminal")
+    let mut tui = match Terminal::new(CrosstermBackend::new(stdout)) {
+        Ok(tui) => tui,
+        Err(error) => {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            return Err(error).context("failed to initialize terminal");
+        }
+    };
+    if let Err(error) = tui.hide_cursor() {
+        let _ = restore_terminal(&mut tui);
+        return Err(error).context("failed to hide terminal cursor");
+    }
+    Ok(TerminalSession {
+        tui,
+        restored: false,
+    })
 }
 
 fn restore_terminal(tui: &mut Tui) -> Result<()> {
@@ -113,16 +171,25 @@ fn restore_terminal(tui: &mut Tui) -> Result<()> {
     raw_mode_result.and(screen_result).and(cursor_result)
 }
 
-fn parse_arguments() -> Result<()> {
+enum Command {
+    Dashboard,
+    Recorder,
+    Stop,
+}
+
+fn parse_arguments() -> Result<Command> {
     let mut arguments = std::env::args().skip(1);
     let Some(argument) = arguments.next() else {
-        return Ok(());
+        return Ok(Command::Dashboard);
     };
+    if arguments.next().is_some() {
+        bail!("too many arguments; try --help");
+    }
 
     match argument.as_str() {
         "-h" | "--help" => {
             println!(
-                "keypulse {}\n\nPrivate keyboard activity dashboard\n\nUSAGE:\n    keypulse\n\nKEYS:\n    1/2/3       Select a tab\n    Left/Right  Change tabs\n    q, Esc      Quit",
+                "keypulse {}\n\nPrivate keyboard activity dashboard\n\nUSAGE:\n    keypulse          Open the dashboard and start recording\n    keypulse --stop   Stop the background recorder\n\nThe recorder continues after the dashboard closes.\n\nKEYS:\n    1/2/3/4     Select a tab\n    Left/Right  Change tabs\n    r           Refresh now\n    q, Esc      Close the dashboard",
                 env!("CARGO_PKG_VERSION")
             );
             std::process::exit(0);
@@ -131,6 +198,11 @@ fn parse_arguments() -> Result<()> {
             println!("keypulse {}", env!("CARGO_PKG_VERSION"));
             std::process::exit(0);
         }
+        "--recorder" if std::env::var_os("KEYPULSE_RECORDER_CHILD").is_some() => {
+            Ok(Command::Recorder)
+        }
+        "--recorder" => bail!("--recorder is an internal option; run keypulse instead"),
+        "--stop" => Ok(Command::Stop),
         _ => bail!("unknown argument: {argument}; try --help"),
     }
 }

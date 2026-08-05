@@ -6,8 +6,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, Duration, Local, NaiveDate, Timelike};
-use rusqlite::{Connection, params};
+#[cfg(test)]
+use chrono::{DateTime, Timelike};
+use chrono::{Duration, Local, NaiveDate};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -29,6 +31,7 @@ pub struct Stats {
 }
 
 impl Stats {
+    #[cfg(test)]
     pub fn record(&mut self, timestamp: DateTime<Local>) {
         let day = self.days.entry(timestamp.date_naive()).or_default();
         day.hours[timestamp.hour() as usize] += 1;
@@ -85,6 +88,13 @@ impl Stats {
 
 pub struct Database {
     connection: Connection,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RecorderStatus {
+    pub active: bool,
+    pub device_count: usize,
+    pub keys_per_minute: usize,
 }
 
 impl Database {
@@ -168,8 +178,71 @@ impl Database {
             .context("failed to commit stats transaction")
     }
 
+    pub fn update_recorder_status(
+        &self,
+        device_count: usize,
+        keys_per_minute: usize,
+    ) -> Result<()> {
+        let device_count = i64::try_from(device_count).context("device count is too large")?;
+        let keys_per_minute =
+            i64::try_from(keys_per_minute).context("keys-per-minute count is too large")?;
+        self.connection
+            .execute(
+                "INSERT INTO recorder_status (id, heartbeat, device_count, keys_per_minute)
+                 VALUES (1, ?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET
+                     heartbeat = excluded.heartbeat,
+                     device_count = excluded.device_count,
+                     keys_per_minute = excluded.keys_per_minute",
+                params![Local::now().timestamp(), device_count, keys_per_minute],
+            )
+            .context("failed to update recorder status")?;
+        Ok(())
+    }
+
+    pub fn load_recorder_status(&self) -> Result<RecorderStatus> {
+        let status = self
+            .connection
+            .query_row(
+                "SELECT heartbeat, device_count, keys_per_minute
+                 FROM recorder_status WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("failed to load recorder status")?;
+        let Some((heartbeat, device_count, keys_per_minute)) = status else {
+            return Ok(RecorderStatus::default());
+        };
+        let active = Local::now().timestamp().saturating_sub(heartbeat) <= 3;
+        if !active {
+            return Ok(RecorderStatus::default());
+        }
+
+        Ok(RecorderStatus {
+            active,
+            device_count: usize::try_from(device_count)
+                .context("database contains a negative device count")?,
+            keys_per_minute: usize::try_from(keys_per_minute)
+                .context("database contains a negative keys-per-minute count")?,
+        })
+    }
+
+    pub fn clear_recorder_status(&self) -> Result<()> {
+        self.connection
+            .execute("DELETE FROM recorder_status WHERE id = 1", [])
+            .context("failed to clear recorder status")?;
+        Ok(())
+    }
+
     pub fn migrate_json(&mut self, path: &Path) -> Result<bool> {
-        if !path.exists() || !self.is_empty()? {
+        if !path.exists() {
             return Ok(false);
         }
 
@@ -185,7 +258,30 @@ impl Database {
                 }
             }
         }
-        self.add_counts(&counts)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to start legacy migration transaction")?;
+        let existing: i64 = transaction
+            .query_row("SELECT COUNT(*) FROM hourly_counts", [], |row| row.get(0))
+            .context("failed to inspect the database before migration")?;
+        if existing > 0 {
+            return Ok(false);
+        }
+        {
+            let mut statement = transaction
+                .prepare("INSERT INTO hourly_counts (date, hour, count) VALUES (?1, ?2, ?3)")
+                .context("failed to prepare legacy stats migration")?;
+            for ((date, hour), count) in counts {
+                let count = i64::try_from(count).context("legacy key count is too large")?;
+                statement
+                    .execute(params![date.format("%Y-%m-%d").to_string(), hour, count])
+                    .context("failed to migrate legacy key count")?;
+            }
+        }
+        transaction
+            .commit()
+            .context("failed to commit legacy stats migration")?;
         Ok(true)
     }
 
@@ -197,22 +293,20 @@ impl Database {
             .execute_batch(
                 "PRAGMA journal_mode = WAL;
                  PRAGMA synchronous = NORMAL;
-                 CREATE TABLE IF NOT EXISTS hourly_counts (
+                  CREATE TABLE IF NOT EXISTS hourly_counts (
                      date TEXT NOT NULL,
                      hour INTEGER NOT NULL CHECK (hour BETWEEN 0 AND 23),
                      count INTEGER NOT NULL CHECK (count >= 0),
-                     PRIMARY KEY (date, hour)
-                 ) WITHOUT ROWID;",
+                      PRIMARY KEY (date, hour)
+                  ) WITHOUT ROWID;
+                  CREATE TABLE IF NOT EXISTS recorder_status (
+                      id INTEGER PRIMARY KEY CHECK (id = 1),
+                      heartbeat INTEGER NOT NULL,
+                      device_count INTEGER NOT NULL CHECK (device_count >= 0),
+                      keys_per_minute INTEGER NOT NULL CHECK (keys_per_minute >= 0)
+                  );",
             )
             .context("failed to initialize database")
-    }
-
-    fn is_empty(&self) -> Result<bool> {
-        let count: i64 = self
-            .connection
-            .query_row("SELECT COUNT(*) FROM hourly_counts", [], |row| row.get(0))
-            .context("failed to inspect database")?;
-        Ok(count == 0)
     }
 }
 
@@ -222,6 +316,18 @@ pub fn default_database_path() -> Result<PathBuf> {
 
 pub fn legacy_json_path() -> Result<PathBuf> {
     Ok(data_directory()?.join("stats.json"))
+}
+
+pub fn recorder_lock_path() -> Result<PathBuf> {
+    Ok(data_directory()?.join("recorder.lock"))
+}
+
+pub fn recorder_control_lock_path() -> Result<PathBuf> {
+    Ok(data_directory()?.join("recorder-control.lock"))
+}
+
+pub fn recorder_log_path() -> Result<PathBuf> {
+    Ok(data_directory()?.join("recorder.log"))
 }
 
 fn data_directory() -> Result<PathBuf> {
@@ -238,7 +344,13 @@ fn data_directory() -> Result<PathBuf> {
 mod tests {
     use chrono::{Local, NaiveDate, TimeZone};
 
-    use std::collections::BTreeMap;
+    use std::{
+        collections::BTreeMap,
+        fs,
+        sync::{Arc, Barrier},
+        thread,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use super::{Database, Stats};
 
@@ -281,5 +393,62 @@ mod tests {
 
         assert_eq!(stats.hours_on(date)[9], 15);
         assert_eq!(stats.total_on(date), 23);
+    }
+
+    #[test]
+    fn database_reports_live_recorder_status() {
+        let database = Database::in_memory().unwrap();
+
+        database.update_recorder_status(2, 37).unwrap();
+        let status = database.load_recorder_status().unwrap();
+
+        assert!(status.active);
+        assert_eq!(status.device_count, 2);
+        assert_eq!(status.keys_per_minute, 37);
+    }
+
+    #[test]
+    fn concurrent_legacy_migration_is_applied_once() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "keypulse-migration-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let database_path = directory.join("keypulse.db");
+        let legacy_path = directory.join("stats.json");
+        let date = NaiveDate::from_ymd_opt(2026, 7, 23).unwrap();
+        let mut stats = Stats::default();
+        stats.days.entry(date).or_default().hours[9] = 12;
+        fs::write(&legacy_path, serde_json::to_vec(&stats).unwrap()).unwrap();
+
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                let database_path = database_path.clone();
+                let legacy_path = legacy_path.clone();
+                thread::spawn(move || {
+                    let mut database = Database::open(&database_path).unwrap();
+                    barrier.wait();
+                    database.migrate_json(&legacy_path).unwrap()
+                })
+            })
+            .collect();
+
+        let migrated = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .filter(|migrated| *migrated)
+            .count();
+        let database = Database::open(&database_path).unwrap();
+
+        assert_eq!(migrated, 1);
+        assert_eq!(database.load_stats().unwrap().total_on(date), 12);
+        drop(database);
+        fs::remove_dir_all(directory).unwrap();
     }
 }

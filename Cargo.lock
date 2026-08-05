@@ -404,10 +404,12 @@ dependencies = [
  "chrono",
  "crossterm",
  "evdev",
+ "libc",
  "ratatui",
  "rusqlite",
  "serde",
  "serde_json",
+ "signal-hook",
 ]
 
 [[package]]

@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
     },
-    thread,
+    thread::{self, JoinHandle},
     time::Duration,
 };
 
@@ -20,31 +20,40 @@ pub enum CaptureEvent {
 
 pub struct CaptureHandle {
     stop: Arc<AtomicBool>,
+    supervisor: Option<JoinHandle<()>>,
 }
 
 impl CaptureHandle {
     pub fn start(sender: Sender<CaptureEvent>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let supervisor_stop = Arc::clone(&stop);
-        thread::spawn(move || supervise_devices(sender, supervisor_stop));
-        Self { stop }
+        let supervisor = thread::spawn(move || supervise_devices(sender, supervisor_stop));
+        Self {
+            stop,
+            supervisor: Some(supervisor),
+        }
     }
 }
 
 impl Drop for CaptureHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Some(supervisor) = self.supervisor.take() {
+            let _ = supervisor.join();
+        }
     }
 }
 
 fn supervise_devices(sender: Sender<CaptureEvent>, stop: Arc<AtomicBool>) {
     let (done_sender, done_receiver) = std::sync::mpsc::channel::<PathBuf>();
-    let mut active = HashMap::<PathBuf, String>::new();
+    let mut active = HashMap::<PathBuf, (String, JoinHandle<()>)>::new();
     let mut last_report = Vec::new();
 
     while !stop.load(Ordering::Relaxed) {
         while let Ok(path) = done_receiver.try_recv() {
-            active.remove(&path);
+            if let Some((_, worker)) = active.remove(&path) {
+                let _ = worker.join();
+            }
         }
 
         for (path, device) in evdev::enumerate() {
@@ -53,18 +62,18 @@ fn supervise_devices(sender: Sender<CaptureEvent>, stop: Arc<AtomicBool>) {
             }
 
             let name = device.name().unwrap_or("Unnamed keyboard").to_owned();
-            active.insert(path.clone(), name);
-
             let worker_sender = sender.clone();
             let worker_done = done_sender.clone();
             let worker_stop = Arc::clone(&stop);
-            thread::spawn(move || {
+            let worker_path = path.clone();
+            let worker = thread::spawn(move || {
                 watch_device(device, &worker_sender, &worker_stop);
-                let _ = worker_done.send(path);
+                let _ = worker_done.send(worker_path);
             });
+            active.insert(path.clone(), (name, worker));
         }
 
-        let mut report: Vec<String> = active.values().cloned().collect();
+        let mut report: Vec<String> = active.values().map(|(name, _)| name.clone()).collect();
         report.sort();
         if report != last_report {
             last_report.clone_from(&report);
@@ -74,6 +83,11 @@ fn supervise_devices(sender: Sender<CaptureEvent>, stop: Arc<AtomicBool>) {
         }
 
         sleep_interruptibly(&stop, Duration::from_secs(2));
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    for (_, (_, worker)) in active {
+        let _ = worker.join();
     }
 }
 
