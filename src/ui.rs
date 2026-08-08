@@ -10,7 +10,7 @@ use ratatui::{
     widgets::{
         Axis, Bar, BarChart, BarGroup, Block, BorderType, Borders, Chart, Dataset, GraphType,
         Paragraph, Sparkline, Tabs,
-        canvas::{Canvas, Circle, Line as CanvasLine},
+        canvas::{Canvas, Circle, Context, Line as CanvasLine},
     },
 };
 
@@ -21,8 +21,8 @@ const TEXT: Color = Color::Rgb(174, 176, 190);
 const MUTED: Color = Color::Rgb(102, 105, 117);
 const FAINT: Color = Color::Rgb(55, 58, 67);
 const BORDER: Color = Color::Rgb(64, 67, 76);
+const SILVER: Color = Color::Rgb(202, 205, 211);
 const BLUE: Color = Color::Rgb(112, 145, 224);
-const BLUE_DIM: Color = Color::Rgb(76, 83, 135);
 const GREEN: Color = Color::Rgb(147, 190, 91);
 const ORANGE: Color = Color::Rgb(222, 145, 94);
 const RED: Color = Color::Rgb(218, 103, 111);
@@ -155,97 +155,109 @@ fn render_live(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_gauge(frame: &mut Frame, area: Rect, app: &App) {
-    let title = format!(" KPM speedometer  ·  goal {} ", format_count(DAILY_TARGET));
+    let title = format!(" KEYBOARD  ·  goal {} ", format_count(DAILY_TARGET));
     let block = panel(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let kpm = app.keys_per_minute as u64;
-    let progress = (kpm as f64 / 400.0).clamp(0.0, 1.0);
+    let max_kpm = 400.0;
+    let progress = (kpm as f64 / max_kpm).clamp(0.0, 1.0);
     let today = app.stats.total_on(app.today());
     let goal = today as f64 / DAILY_TARGET as f64 * 100.0;
     let x_per_cell = 2.4 / f64::from(inner.width.max(1));
-    let kpm_label = format!("{} kpm", format_count(kpm));
-    let goal_label = format!("goal {goal:.0}%  ·  needle eases");
+    let value_label = format!(" {} KPM ", format_count(kpm));
+    let goal_label = format!("goal {goal:.0}%");
 
     let canvas = Canvas::default()
         .marker(symbols::Marker::Braille)
         .x_bounds([-1.2, 1.2])
         .y_bounds([-1.0, 1.0])
         .paint(move |context| {
-            let segments = 64;
-            for segment in 0..segments {
-                if segment % 4 == 3 {
-                    continue;
-                }
-                let from = segment as f64 / segments as f64;
-                let to = (segment as f64 + 0.72) / segments as f64;
-                let a1 = gauge_angle(from);
-                let a2 = gauge_angle(to);
+            const SEGMENTS: usize = 120;
+            for segment in 0..SEGMENTS {
+                let from = segment as f64 / SEGMENTS as f64;
+                let to = (segment as f64 + 0.78) / SEGMENTS as f64;
+                let a1 = dial_angle(from);
+                let a2 = dial_angle(to);
                 context.draw(&CanvasLine {
-                    x1: 1.00 * a1.cos(),
-                    y1: 0.02 + 0.88 * a1.sin(),
-                    x2: 1.00 * a2.cos(),
-                    y2: 0.02 + 0.88 * a2.sin(),
-                    color: FAINT,
-                });
-                context.draw(&CanvasLine {
-                    x1: 0.78 * a1.cos(),
-                    y1: -0.05 + 0.68 * a1.sin(),
-                    x2: 0.78 * a2.cos(),
-                    y2: -0.05 + 0.68 * a2.sin(),
-                    color: if to <= progress { GREEN } else { BLUE_DIM },
+                    x1: 1.02 * a1.cos(),
+                    y1: 0.94 * a1.sin(),
+                    x2: 1.02 * a2.cos(),
+                    y2: 0.94 * a2.sin(),
+                    color: SILVER,
                 });
             }
 
-            for tick in 0..=8 {
-                let fraction = tick as f64 / 8.0;
-                let angle = gauge_angle(fraction);
-                let inner_radius = if tick % 2 == 0 { 0.83 } else { 0.90 };
+            for tick in 0..=50 {
+                let fraction = tick as f64 / 50.0;
+                let angle = dial_angle(fraction);
+                let major = tick % 10 == 0;
+                let medium = tick % 5 == 0;
+                let inner_radius = if major {
+                    0.72
+                } else if medium {
+                    0.79
+                } else {
+                    0.85
+                };
                 context.draw(&CanvasLine {
                     x1: inner_radius * angle.cos(),
-                    y1: 0.02 + inner_radius * 0.88 * angle.sin(),
-                    x2: 1.03 * angle.cos(),
-                    y2: 0.02 + 0.91 * angle.sin(),
-                    color: if tick % 2 == 0 { MUTED } else { FAINT },
+                    y1: 0.86 * inner_radius * angle.sin(),
+                    x2: 0.93 * angle.cos(),
+                    y2: 0.86 * 0.93 * angle.sin(),
+                    color: if major { TEXT } else { MUTED },
                 });
             }
 
             for (label, x, y) in [
-                ("0", -1.10, -0.62),
-                ("100", -0.86, 0.20),
-                ("200", -0.06, 0.83),
-                ("300", 0.76, 0.20),
-                ("400", 1.02, -0.62),
+                ("0", -0.84, -0.53),
+                ("100", -0.84, 0.18),
+                ("200", -0.06, 0.60),
+                ("300", 0.70, 0.18),
+                ("400", 0.82, -0.53),
             ] {
                 context.print(x, y, Span::styled(label, Style::default().fg(MUTED)));
             }
 
-            let angle = gauge_angle(progress);
+            let angle = dial_angle(progress);
             context.draw(&CanvasLine {
                 x1: 0.0,
-                y1: -0.42,
-                x2: 0.66 * angle.cos(),
-                y2: -0.02 + 0.58 * angle.sin(),
-                color: BLUE,
+                y1: -0.04,
+                x2: 0.70 * angle.cos(),
+                y2: 0.63 * angle.sin(),
+                color: RED,
             });
             context.draw(&Circle {
                 x: 0.0,
-                y: -0.42,
-                radius: 0.035,
-                color: GREEN,
+                y: -0.04,
+                radius: 0.070,
+                color: FAINT,
             });
+            context.draw(&Circle {
+                x: 0.0,
+                y: -0.04,
+                radius: 0.045,
+                color: SILVER,
+            });
+
             context.print(
-                -(kpm_label.len() as f64) * x_per_cell / 2.0,
-                -0.61,
+                -0.29,
+                -0.28,
+                Span::styled("GROUND SPEED", Style::default().fg(FAINT)),
+            );
+            draw_boxed_label(context, &value_label, x_per_cell, -0.48);
+            context.print(
+                -0.20,
+                -0.78,
                 Span::styled(
-                    kpm_label.clone(),
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                    "KEYS",
+                    Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
                 ),
             );
             context.print(
                 -(goal_label.len() as f64) * x_per_cell / 2.0,
-                -0.86,
+                -0.91,
                 Span::styled(goal_label.clone(), Style::default().fg(MUTED)),
             );
         });
@@ -719,8 +731,56 @@ fn inset(area: Rect, horizontal: u16, vertical: u16) -> Rect {
     }
 }
 
-fn gauge_angle(progress: f64) -> f64 {
+fn dial_angle(progress: f64) -> f64 {
     (220.0 - progress * 260.0) * PI / 180.0
+}
+
+fn draw_boxed_label(context: &mut Context<'_>, label: &str, x_per_cell: f64, y: f64) {
+    let half_width = (label.len() as f64 * x_per_cell + 0.12) / 2.0;
+    let left = -half_width;
+    let right = half_width;
+    let top = y + 0.09;
+    let bottom = y - 0.09;
+    for line in [
+        CanvasLine {
+            x1: left,
+            y1: top,
+            x2: right,
+            y2: top,
+            color: MUTED,
+        },
+        CanvasLine {
+            x1: left,
+            y1: bottom,
+            x2: right,
+            y2: bottom,
+            color: MUTED,
+        },
+        CanvasLine {
+            x1: left,
+            y1: bottom,
+            x2: left,
+            y2: top,
+            color: MUTED,
+        },
+        CanvasLine {
+            x1: right,
+            y1: bottom,
+            x2: right,
+            y2: top,
+            color: MUTED,
+        },
+    ] {
+        context.draw(&line);
+    }
+    context.print(
+        -(label.len() as f64) * x_per_cell / 2.0,
+        y - 0.03,
+        Span::styled(
+            label.to_owned(),
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        ),
+    );
 }
 
 fn percent_change(current: u64, previous: u64) -> f64 {
@@ -856,7 +916,14 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
 
-        for label in ["keycount", "Live", "KPM speedometer", "Today", "Yesterday"] {
+        for label in [
+            "keycount",
+            "Live",
+            "KEYBOARD",
+            "GROUND SPEED",
+            "Today",
+            "Yesterday",
+        ] {
             assert!(output.contains(label), "missing {label:?}\n{output}");
         }
     }
