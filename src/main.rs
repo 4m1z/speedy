@@ -5,7 +5,7 @@ mod store;
 mod ui;
 
 use std::{
-    io::{self, Stdout},
+    io::{self, Stdout, Write},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -21,6 +21,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
+use serde::Serialize;
 use store::{Database, default_database_path, legacy_json_path};
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
@@ -51,6 +52,13 @@ impl Drop for TerminalSession {
 fn main() -> Result<()> {
     match parse_arguments()? {
         Command::Dashboard => run_dashboard(),
+        Command::Start => {
+            drop(prepare_database()?);
+            recorder::ensure_running()?;
+            println!("speedy recorder started");
+            Ok(())
+        }
+        Command::Status => print_status(),
         Command::Recorder => recorder::run(),
         Command::Stop => {
             if recorder::stop()? {
@@ -65,9 +73,7 @@ fn main() -> Result<()> {
 
 fn run_dashboard() -> Result<()> {
     // Complete any one-time migration before the recorder and dashboard access SQLite together.
-    let mut database = Database::open(&default_database_path()?)?;
-    database.migrate_json(&legacy_json_path()?)?;
-    drop(database);
+    drop(prepare_database()?);
 
     recorder::ensure_running()?;
     let database = Database::open(&default_database_path()?)?;
@@ -84,6 +90,39 @@ fn run_dashboard() -> Result<()> {
     let run_result = run(&mut terminal.tui, &mut app, &interrupted);
     let restore_result = terminal.restore();
     run_result.and(restore_result)
+}
+
+fn prepare_database() -> Result<Database> {
+    let mut database = Database::open(&default_database_path()?)?;
+    database.migrate_json(&legacy_json_path()?)?;
+    Ok(database)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Status {
+    today: u64,
+    keys_per_minute: usize,
+    active: bool,
+    device_count: usize,
+}
+
+fn print_status() -> Result<()> {
+    let database = prepare_database()?;
+    let recorder = database.load_recorder_status()?;
+    let today = database
+        .load_stats()?
+        .total_on(chrono::Local::now().date_naive());
+    let status = Status {
+        today,
+        keys_per_minute: recorder.keys_per_minute,
+        active: recorder.active,
+        device_count: recorder.device_count,
+    };
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    serde_json::to_writer(&mut output, &status).context("failed to serialize speedy status")?;
+    writeln!(output).context("failed to write speedy status")
 }
 
 fn run(tui: &mut Tui, app: &mut App, interrupted: &AtomicBool) -> Result<()> {
@@ -173,6 +212,8 @@ fn restore_terminal(tui: &mut Tui) -> Result<()> {
 
 enum Command {
     Dashboard,
+    Start,
+    Status,
     Recorder,
     Stop,
 }
@@ -189,7 +230,7 @@ fn parse_arguments() -> Result<Command> {
     match argument.as_str() {
         "-h" | "--help" => {
             println!(
-                "speedy {}\n\nPrivate keyboard activity dashboard\n\nUSAGE:\n    speedy          Open the dashboard and start recording\n    speedy --stop   Stop the background recorder\n\nThe recorder continues after the dashboard closes.\n\nKEYS:\n    1/2/3/4     Select a tab\n    Left/Right  Change tabs\n    r           Refresh now\n    q, Esc      Close the dashboard",
+                "speedy {}\n\nPrivate keyboard activity dashboard\n\nUSAGE:\n    speedy           Open the dashboard and start recording\n    speedy --start   Start the background recorder\n    speedy --status  Print machine-readable recorder status\n    speedy --stop    Stop the background recorder\n\nThe recorder continues after the dashboard closes.\n\nKEYS:\n    1/2/3/4     Select a tab\n    Left/Right  Change tabs\n    r           Refresh now\n    q, Esc      Close the dashboard",
                 env!("CARGO_PKG_VERSION")
             );
             std::process::exit(0);
@@ -202,6 +243,8 @@ fn parse_arguments() -> Result<Command> {
             Ok(Command::Recorder)
         }
         "--recorder" => bail!("--recorder is an internal option; run speedy instead"),
+        "--start" => Ok(Command::Start),
+        "--status" => Ok(Command::Status),
         "--stop" => Ok(Command::Stop),
         _ => bail!("unknown argument: {argument}; try --help"),
     }

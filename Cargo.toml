@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 description = "A private terminal dashboard for daily keyboard activity"
 license = "MIT"
+repository = "https://github.com/4m1z/speedy"
+homepage = "https://amirahmadzadeh.com/blog/speedy"
 
 [dependencies]
 anyhow = "1.0"

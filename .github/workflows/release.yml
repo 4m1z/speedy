@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Test
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --locked --release
+      - name: Package
+        run: |
+          mkdir -p dist
+          install -m755 target/release/speedy dist/speedy
+          tar -C dist -czf dist/speedy-x86_64-unknown-linux-gnu.tar.gz speedy
+          cd dist
+          sha256sum speedy-x86_64-unknown-linux-gnu.tar.gz > speedy-x86_64-unknown-linux-gnu.tar.gz.sha256
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/speedy-x86_64-unknown-linux-gnu.tar.gz \
+            dist/speedy-x86_64-unknown-linux-gnu.tar.gz.sha256

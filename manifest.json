@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.4m1z.speedy",
+  "name": "Speedy",
+  "version": "0.1.0",
+  "author": "Amir Ahmadzadeh",
+  "description": "Private keyboard activity counter with a live bar widget",
+  "kinds": [
+    "bar-widget",
+    "service"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml",
+    "service": "Service.qml"
+  },
+  "barWidget": {
+    "displayName": "Speedy",
+    "description": "Today's key count and live typing speed",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "center"
+  }
+}
