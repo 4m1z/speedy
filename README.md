@@ -70,7 +70,14 @@ cargo run
 omarchy plugin validate .
 ```
 
-For local plugin development, link this checkout into Omarchy's user plugin directory, rescan, and enable `io.github.4m1z.speedy`. Files under the linked checkout hot-reload in `omarchy-shell`.
+For local plugin development, install the checkout as a git-managed plugin and enable it (edits require a copy or reinstall because symlinks fail `omarchy plugin validate`):
+
+```bash
+omarchy plugin add file://$PWD --yes
+omarchy plugin enable io.github.4m1z.speedy
+```
+
+Or copy the checkout to `~/.config/omarchy/plugins/io.github.4m1z.speedy` for hot-reload of QML edits.
 
 ## Publish A Release
 
