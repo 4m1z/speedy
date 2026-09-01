@@ -16,11 +16,18 @@ use std::{
 use anyhow::{Context, Result, bail};
 use app::{App, Tab};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{
+    Terminal,
+    backend::CrosstermBackend,
+    layout::{Constraint, Layout, Rect},
+};
 use serde::Serialize;
 use store::{Database, default_database_path, legacy_json_path};
 
@@ -130,15 +137,70 @@ fn run(tui: &mut Tui, app: &mut App, interrupted: &AtomicBool) -> Result<()> {
         app.refresh_if_due();
         tui.draw(|frame| ui::render(frame, app))?;
 
-        if event::poll(Duration::from_millis(80))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-            && handle_key(app, key)
-        {
-            return Ok(());
+        if event::poll(Duration::from_millis(80))? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press && handle_key(app, key) => {
+                    return Ok(());
+                }
+                Event::Mouse(mouse)
+                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) =>
+                {
+                    if let Ok(size) = tui.size() {
+                        let area = Rect {
+                            x: 0,
+                            y: 0,
+                            width: size.width,
+                            height: size.height,
+                        };
+                        handle_mouse(app, mouse, area);
+                    }
+                }
+                _ => {}
+            }
         }
     }
     Ok(())
+}
+
+fn handle_mouse(app: &mut App, mouse: MouseEvent, area: Rect) {
+    if area.width < 60 || area.height < 32 {
+        return;
+    }
+    let inner = inset(area, 2, 1);
+    let page = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Length(1),
+        Constraint::Min(23),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    let tabs = page[2];
+    if mouse.column < tabs.x
+        || mouse.column >= tabs.x + tabs.width
+        || mouse.row < tabs.y
+        || mouse.row >= tabs.y + tabs.height
+    {
+        return;
+    }
+    let relative_x = mouse.column.saturating_sub(tabs.x);
+    let index = (u32::from(relative_x) * 4 / u32::from(tabs.width.max(1))) as usize;
+    app.tab = match index {
+        0 => Tab::Live,
+        1 => Tab::Daily,
+        2 => Tab::Hourly,
+        _ => Tab::Records,
+    };
+}
+
+fn inset(area: Rect, horizontal: u16, vertical: u16) -> Rect {
+    Rect {
+        x: area.x.saturating_add(horizontal),
+        y: area.y.saturating_add(vertical),
+        width: area.width.saturating_sub(horizontal.saturating_mul(2)),
+        height: area.height.saturating_sub(vertical.saturating_mul(2)),
+    }
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> bool {
@@ -180,7 +242,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 fn start_terminal() -> Result<TerminalSession> {
     enable_raw_mode().context("failed to enable terminal raw mode")?;
     let mut stdout = io::stdout();
-    if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+    if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
         let _ = disable_raw_mode();
         return Err(error).context("failed to enter alternate screen");
     }
@@ -188,7 +250,7 @@ fn start_terminal() -> Result<TerminalSession> {
         Ok(tui) => tui,
         Err(error) => {
             let _ = disable_raw_mode();
-            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
             return Err(error).context("failed to initialize terminal");
         }
     };
@@ -204,8 +266,12 @@ fn start_terminal() -> Result<TerminalSession> {
 
 fn restore_terminal(tui: &mut Tui) -> Result<()> {
     let raw_mode_result = disable_raw_mode().context("failed to disable terminal raw mode");
-    let screen_result = execute!(tui.backend_mut(), LeaveAlternateScreen)
-        .context("failed to leave alternate screen");
+    let screen_result = execute!(
+        tui.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )
+    .context("failed to leave alternate screen");
     let cursor_result = tui.show_cursor().context("failed to show terminal cursor");
     raw_mode_result.and(screen_result).and(cursor_result)
 }

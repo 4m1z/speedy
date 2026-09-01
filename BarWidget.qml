@@ -39,9 +39,16 @@ BarWidget {
     if (!startProc.running) startProc.running = true
   }
 
+  readonly property string appId: "io.github.4m1z.speedy"
+
   function openDashboard() {
-    if (!bar) return
-    bar.run("omarchy-launch-or-focus-tui --app-id=io.github.4m1z.speedy " + bar.shellQuote(executable))
+    // Toggle: close if already open, otherwise launch. Uses exact class match
+    // so the reverse-DNS id with dots does not break hyprctl's \b regex.
+    Quickshell.execDetached([
+      "bash",
+      "-lc",
+      "app=\"" + appId + "\"; exe=\"" + executable + "\"; addr=$(hyprctl clients -j | jq -r --arg a \"$app\" '.[] | select(.class==$a) | .address' | head -n1); if [ -n \"$addr\" ]; then hyprctl dispatch closewindow address:$addr >/dev/null; else omarchy-launch-tui --app-id=\"$app\" \"$exe\" >/dev/null 2>&1 & fi"
+    ])
   }
 
   implicitWidth: button.implicitWidth
@@ -100,9 +107,9 @@ BarWidget {
     active: root.statusLoaded && (!root.recorderActive || root.deviceCount === 0)
     tooltipText: root.tooltip()
 
-    onPressed: function(button) {
-      if (button === Qt.RightButton) root.startRecorder()
-      else if (button === Qt.MiddleButton) root.refresh()
+    onPressed: function(b) {
+      if (b === Qt.RightButton) root.startRecorder()
+      else if (b === Qt.MiddleButton) root.refresh()
       else root.openDashboard()
     }
   }
