@@ -296,7 +296,7 @@ fn parse_arguments() -> Result<Command> {
     match argument.as_str() {
         "-h" | "--help" => {
             println!(
-                "speedy {}\n\nPrivate keyboard activity dashboard\n\nUSAGE:\n    speedy           Open the dashboard and start recording\n    speedy --start   Start the background recorder\n    speedy --status  Print machine-readable recorder status\n    speedy --stop    Stop the background recorder\n\nThe recorder continues after the dashboard closes.\n\nKEYS:\n    1/2/3/4     Select a tab\n    Left/Right  Change tabs\n    r           Refresh now\n    q, Esc      Close the dashboard",
+                "speedy {}\n\nPrivate keyboard activity dashboard\n\nUSAGE:\n    speedy           Open the dashboard and start recording\n    speedy --start   Start the background recorder\n    speedy --status  Print machine-readable recorder status\n    speedy --stop    Stop the background recorder\n\nThe recorder continues after the dashboard closes.\n\nKEYS:\n    1/2/3/4     Select a tab (or click the heading)\n    Left/Right  Change tabs\n    r           Refresh now\n    q, Esc      Close the dashboard",
                 env!("CARGO_PKG_VERSION")
             );
             std::process::exit(0);
