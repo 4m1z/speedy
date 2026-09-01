@@ -39,15 +39,14 @@ BarWidget {
     if (!startProc.running) startProc.running = true
   }
 
-  readonly property string appId: "io.github.4m1z.speedy"
+  readonly property string appId: "speedy"
+  readonly property string windowTitle: "Speedy"
 
   function openDashboard() {
-    // Toggle: close if already open, otherwise launch. Uses exact class match
-    // so the reverse-DNS id with dots does not break hyprctl's \b regex.
     Quickshell.execDetached([
       "bash",
       "-lc",
-      "app=\"" + appId + "\"; exe=\"" + executable + "\"; addr=$(hyprctl clients -j | jq -r --arg a \"$app\" '.[] | select(.class==$a) | .address' | head -n1); if [ -n \"$addr\" ]; then hyprctl dispatch closewindow address:$addr >/dev/null; else omarchy-launch-tui --app-id=\"$app\" \"$exe\" >/dev/null 2>&1 & fi"
+      "title=\"" + windowTitle + "\"; exe=\"" + executable + "\"; addr=$(hyprctl clients -j | jq -r --arg t \"$title\" '.[] | select(.title==$t) | .address' | head -n1); if [ -n \"$addr\" ]; then hyprctl dispatch \"hl.dsp.window.close({ window = \\\"address:$addr\\\" })\" >/dev/null 2>&1 || hyprctl dispatch closewindow address:$addr >/dev/null 2>&1; else xdg-terminal-exec --app-id=\"" + appId + "\" --title=\"$title\" -e \"$exe\" >/dev/null 2>&1 & fi"
     ])
   }
 
