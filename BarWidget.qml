@@ -16,19 +16,38 @@ BarWidget {
   property int deviceCount: 0
 
   function compactCount(value) {
-    if (value >= 1000000) return (value / 1000000).toFixed(1) + "M"
-    if (value >= 1000) return (value / 1000).toFixed(1) + "K"
-    return String(value)
+    var formatted;
+    if (value >= 1000000) formatted = (value / 1000000).toFixed(1) + "M";
+    else if (value >= 1000) formatted = (value / 1000).toFixed(1) + "K";
+    else return String(value);
+    return formatted.replace(/\.0([MK])$/, "$1");
+  }
+
+  function fullCount(value) {
+    return Number(value).toLocaleString();
+  }
+
+  function buttonText() {
+    if (root.vertical)
+      return "󰌌";
+    var count = root.statusLoaded ? root.compactCount(root.today) : "--";
+    var label = "󰌌  " + count;
+    if (root.statusLoaded && root.recorderActive && root.deviceCount > 0 && root.keysPerMinute > 0)
+      label += " · " + root.keysPerMinute;
+    return label;
   }
 
   function tooltip() {
     if (!statusLoaded)
-      return "Speedy is not installed\nRun the installer from the Speedy repository"
+      return "Speedy is not installed\nRun the installer from the Speedy repository";
+    var total = root.fullCount(root.today);
     if (!recorderActive)
-      return compactCount(today) + " keys today\nRecorder stopped - right-click to start"
+      return "Speedy · " + total + " keys today\nRecorder stopped — right-click to start";
     if (deviceCount === 0)
-      return compactCount(today) + " keys today\nNo readable keyboard found; check input-group access"
-    return compactCount(today) + " keys today · " + keysPerMinute + " KPM\nClick to open Speedy"
+      return "Speedy · " + total + " keys today\nNo readable keyboard found; check input-group access";
+    if (keysPerMinute > 0)
+      return "Speedy · " + total + " keys today · " + keysPerMinute + " KPM\nClick to open Speedy";
+    return "Speedy · " + total + " keys today\nClick to open Speedy";
   }
 
   function refresh() {
@@ -46,7 +65,12 @@ BarWidget {
     Quickshell.execDetached([
       "bash",
       "-lc",
-      "title=\"" + windowTitle + "\"; exe=\"" + executable + "\"; addr=$(hyprctl clients -j | jq -r --arg t \"$title\" '.[] | select(.title==$t) | .address' | head -n1); if [ -n \"$addr\" ]; then hyprctl dispatch \"hl.dsp.window.close({ window = \\\"address:$addr\\\" })\" >/dev/null 2>&1 || hyprctl dispatch closewindow address:$addr >/dev/null 2>&1; else xdg-terminal-exec --app-id=\"" + appId + "\" --title=\"$title\" -e \"$exe\" >/dev/null 2>&1 & fi"
+      "title=\"" + windowTitle + "\"; exe=\"" + executable + "\"; \
+addr=$(hyprctl clients -j | jq -r --arg t \"$title\" '.[] | select(.title==$t) | .address' | head -n1); \
+if [ -n \"$addr\" ]; then \
+  hyprctl dispatch \"hl.dsp.window.close({ window = \\\"address:$addr\\\" })\" >/dev/null 2>&1; \
+fi; \
+(xdg-terminal-exec --app-id=\"speedy\" --title=\"$title\" -e \"$exe\" >/dev/null 2>&1 &)"
     ])
   }
 
@@ -102,7 +126,7 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.vertical ? "󰌌" : "󰌌  " + (root.statusLoaded ? root.compactCount(root.today) : "--")
+    text: root.buttonText()
     active: root.statusLoaded && (!root.recorderActive || root.deviceCount === 0)
     tooltipText: root.tooltip()
 

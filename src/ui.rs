@@ -76,25 +76,30 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         ("live", GREEN)
     };
 
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "keycount",
-                Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
-            ),
-            separator(),
-            Span::styled(
-                now.format("%Y-%m-%d").to_string(),
-                Style::default().fg(MUTED),
-            ),
-            separator(),
-            Span::styled(username, Style::default().fg(TEXT)),
-            Span::raw("  "),
-            Span::styled("● ", Style::default().fg(color)),
-            Span::styled(status, Style::default().fg(TEXT)),
-        ])),
-        area,
-    );
+    let mut spans = vec![
+        Span::styled(
+            "speedy",
+            Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+        ),
+        separator(),
+        Span::styled(
+            now.format("%Y-%m-%d").to_string(),
+            Style::default().fg(MUTED),
+        ),
+        separator(),
+        Span::styled(username, Style::default().fg(TEXT)),
+        Span::raw("  "),
+        Span::styled("● ", Style::default().fg(color)),
+        Span::styled(status, Style::default().fg(TEXT)),
+    ];
+    if app.recorder_active && app.device_count > 0 {
+        spans.push(Span::styled(
+            format!("  {} KPM", format_count(app.keys_per_minute as u64)),
+            Style::default().fg(speed_color(app.keys_per_minute as u64)),
+        ));
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_tabs(frame: &mut Frame, area: Rect, selected: Tab) {
@@ -165,6 +170,7 @@ fn render_gauge(frame: &mut Frame, area: Rect, app: &App) {
     let progress = (kpm as f64 / max_kpm).clamp(0.0, 1.0);
     let today = app.stats.total_on(app.today());
     let goal = today as f64 / DAILY_TARGET as f64 * 100.0;
+    let speed = speed_color(kpm);
     let x_per_cell = 2.4 / f64::from(inner.width.max(1));
     let value_label = format!(" {} KPM ", format_count(kpm));
     let goal_label = format!("goal {goal:.0}%");
@@ -175,17 +181,42 @@ fn render_gauge(frame: &mut Frame, area: Rect, app: &App) {
         .y_bounds([-1.0, 1.0])
         .paint(move |context| {
             const SEGMENTS: usize = 120;
+            // Dim full track first so the active arc pops.
             for segment in 0..SEGMENTS {
                 let from = segment as f64 / SEGMENTS as f64;
                 let to = (segment as f64 + 0.78) / SEGMENTS as f64;
                 let a1 = dial_angle(from);
                 let a2 = dial_angle(to);
+                let lit = from <= progress;
+                let color = if lit { speed } else { FAINT };
+                // Double-stroke the lit arc for a bolder, glowing sweep.
+                let outer = if lit { 1.03 } else { 1.02 };
                 context.draw(&CanvasLine {
-                    x1: 1.02 * a1.cos(),
+                    x1: outer * a1.cos(),
                     y1: 0.94 * a1.sin(),
-                    x2: 1.02 * a2.cos(),
+                    x2: outer * a2.cos(),
                     y2: 0.94 * a2.sin(),
-                    color: SILVER,
+                    color,
+                });
+                if lit {
+                    context.draw(&CanvasLine {
+                        x1: 0.985 * a1.cos(),
+                        y1: 0.905 * a1.sin(),
+                        x2: 0.985 * a2.cos(),
+                        y2: 0.905 * a2.sin(),
+                        color,
+                    });
+                }
+            }
+
+            // Glowing tip dot at the leading edge.
+            if progress > 0.005 {
+                let tip = dial_angle(progress);
+                context.draw(&Circle {
+                    x: 1.01 * tip.cos(),
+                    y: 0.93 * tip.sin(),
+                    radius: 0.032,
+                    color: speed,
                 });
             }
 
@@ -195,70 +226,111 @@ fn render_gauge(frame: &mut Frame, area: Rect, app: &App) {
                 let major = tick % 10 == 0;
                 let medium = tick % 5 == 0;
                 let inner_radius = if major {
-                    0.72
+                    0.70
                 } else if medium {
-                    0.79
+                    0.78
                 } else {
-                    0.85
+                    0.845
                 };
+                let passed = fraction <= progress + f64::EPSILON;
                 context.draw(&CanvasLine {
                     x1: inner_radius * angle.cos(),
                     y1: 0.86 * inner_radius * angle.sin(),
                     x2: 0.93 * angle.cos(),
                     y2: 0.86 * 0.93 * angle.sin(),
-                    color: if major { TEXT } else { MUTED },
+                    color: if passed {
+                        speed
+                    } else if major {
+                        TEXT
+                    } else {
+                        MUTED
+                    },
                 });
             }
 
-            for (label, x, y) in [
-                ("0", -0.84, -0.53),
-                ("100", -0.84, 0.18),
-                ("200", -0.06, 0.60),
-                ("300", 0.70, 0.18),
-                ("400", 0.82, -0.53),
+            for (label, x, y, threshold) in [
+                ("0", -0.84, -0.53, 0.0),
+                ("100", -0.84, 0.18, 0.25),
+                ("200", -0.06, 0.60, 0.50),
+                ("300", 0.70, 0.18, 0.75),
+                ("400", 0.82, -0.53, 1.0),
             ] {
-                context.print(x, y, Span::styled(label, Style::default().fg(MUTED)));
+                let reached = progress + 0.02 >= threshold;
+                context.print(
+                    x,
+                    y,
+                    Span::styled(
+                        label,
+                        Style::default().fg(if reached { SILVER } else { MUTED }),
+                    ),
+                );
             }
 
             let angle = dial_angle(progress);
+            let tip_x = 0.78 * angle.cos();
+            let tip_y = 0.70 * angle.sin();
+            // Soft shadow under the needle for depth, then the needle itself.
+            context.draw(&CanvasLine {
+                x1: -0.14 * angle.cos(),
+                y1: -0.04 - 0.13 * angle.sin(),
+                x2: tip_x,
+                y2: tip_y - 0.04,
+                color: FAINT,
+            });
+            context.draw(&CanvasLine {
+                x1: -0.16 * angle.cos(),
+                y1: -0.04 - 0.14 * angle.sin(),
+                x2: tip_x,
+                y2: tip_y - 0.035,
+                color: SILVER,
+            });
             context.draw(&CanvasLine {
                 x1: 0.0,
                 y1: -0.04,
-                x2: 0.70 * angle.cos(),
-                y2: 0.63 * angle.sin(),
+                x2: tip_x,
+                y2: tip_y - 0.035,
                 color: RED,
             });
             context.draw(&Circle {
                 x: 0.0,
                 y: -0.04,
-                radius: 0.070,
+                radius: 0.075,
                 color: FAINT,
             });
             context.draw(&Circle {
                 x: 0.0,
                 y: -0.04,
-                radius: 0.045,
+                radius: 0.058,
+                color: speed,
+            });
+            context.draw(&Circle {
+                x: 0.0,
+                y: -0.04,
+                radius: 0.036,
                 color: SILVER,
             });
 
             context.print(
                 -0.29,
                 -0.28,
-                Span::styled("GROUND SPEED", Style::default().fg(FAINT)),
+                Span::styled("GROUND SPEED", Style::default().fg(MUTED)),
             );
-            draw_boxed_label(context, &value_label, x_per_cell, -0.48);
+            draw_boxed_label(context, &value_label, speed, x_per_cell, -0.48);
             context.print(
                 -0.20,
                 -0.78,
                 Span::styled(
-                    "KEYS",
+                    "KEYS / MIN",
                     Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
                 ),
             );
             context.print(
                 -(goal_label.len() as f64) * x_per_cell / 2.0,
                 -0.91,
-                Span::styled(goal_label.clone(), Style::default().fg(MUTED)),
+                Span::styled(
+                    goal_label.clone(),
+                    Style::default().fg(if goal >= 100.0 { GREEN } else { MUTED }),
+                ),
             );
         });
     frame.render_widget(canvas, inner);
@@ -266,21 +338,28 @@ fn render_gauge(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_today(frame: &mut Frame, area: Rect, app: &App) {
     let total = app.stats.total_on(app.today());
-    let block = panel(" Today ");
+    let goal_frac = (total as f64 / DAILY_TARGET as f64).clamp(0.0, 1.0);
+    let number_color = if total >= DAILY_TARGET { GREEN } else { BLUE };
+    let block = panel(format!(
+        " Today  ·  {}% of {} ",
+        (total as f64 / DAILY_TARGET as f64 * 100.0) as u64,
+        format_count(DAILY_TARGET)
+    ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    let bar = goal_bar(goal_frac, inner.width.saturating_sub(4) as usize);
     let (art, art_width) = thin_number_art(total);
     if inner.height >= 6 && art_width <= inner.width {
         let mut lines = art;
-        lines.push(Line::from(Span::styled(
-            "keys today",
-            Style::default().fg(MUTED),
-        )));
+        lines.push(Line::from(vec![
+            Span::styled("keys today  ", Style::default().fg(MUTED)),
+            Span::styled(bar, Style::default().fg(number_color)),
+        ]));
         frame.render_widget(
             Paragraph::new(lines)
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(BLUE)),
+                .style(Style::default().fg(number_color)),
             inner,
         );
     } else {
@@ -288,9 +367,14 @@ fn render_today(frame: &mut Frame, area: Rect, app: &App) {
             Paragraph::new(vec![
                 Line::from(Span::styled(
                     format_count(total),
-                    Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(number_color)
+                        .add_modifier(Modifier::BOLD),
                 )),
-                Line::from(Span::styled("keys today", Style::default().fg(MUTED))),
+                Line::from(vec![
+                    Span::styled("keys today  ", Style::default().fg(MUTED)),
+                    Span::styled(bar, Style::default().fg(number_color)),
+                ]),
             ])
             .alignment(Alignment::Center),
             inner,
@@ -300,9 +384,17 @@ fn render_today(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_comparison(frame: &mut Frame, area: Rect, app: &App) {
     let today = app.today();
+    let today_total = app.stats.total_on(today);
     let yesterday = app.stats.total_on(today.pred_opt().unwrap_or(today));
     let average = app.stats.average_for_days(today, 7);
     let streak = app.current_streak();
+    let (arrow, arrow_color) = if today_total > yesterday {
+        (" ▲", GREEN)
+    } else if today_total < yesterday {
+        (" ▼", ORANGE)
+    } else {
+        (" ━", MUTED)
+    };
     let block = panel(" vs. ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -310,13 +402,13 @@ fn render_comparison(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(Line::from(vec![
             Span::styled("Yesterday ", Style::default().fg(MUTED)),
             Span::styled(format_count(yesterday), Style::default().fg(TEXT)),
+            Span::styled(arrow, Style::default().fg(arrow_color)),
             separator(),
             Span::styled("7-day avg ", Style::default().fg(MUTED)),
             Span::styled(format_count(average), Style::default().fg(TEXT)),
             separator(),
             Span::styled("Streak ", Style::default().fg(MUTED)),
             Span::styled(format!("{streak} d"), Style::default().fg(ORANGE)),
-            separator(),
         ]))
         .alignment(Alignment::Center),
         inner,
@@ -324,7 +416,8 @@ fn render_comparison(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_recent_kpm(frame: &mut Frame, area: Rect, app: &App) {
-    let block = panel(" KPM (recent) ");
+    let peak = app.kpm_history.iter().copied().max().unwrap_or(0);
+    let block = panel(format!(" KPM recent · peak {} ", format_count(peak)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -332,17 +425,18 @@ fn render_recent_kpm(frame: &mut Frame, area: Rect, app: &App) {
     let visible = app.kpm_history.len().min(slots);
     let mut values = vec![0; slots.saturating_sub(visible)];
     values.extend(app.kpm_history.iter().skip(app.kpm_history.len() - visible));
+    let maximum = values.iter().copied().max().unwrap_or(1).max(60);
     let bars: Vec<Bar> = values
         .iter()
         .map(|value| {
+            let color = speed_color(*value);
             Bar::default()
                 .value(*value)
-                .style(Style::default().fg(BLUE))
-                .value_style(Style::default().fg(BLUE))
+                .style(Style::default().fg(color))
+                .value_style(Style::default().fg(color))
                 .text_value(String::new())
         })
         .collect();
-    let maximum = values.iter().copied().max().unwrap_or(1).max(60);
     frame.render_widget(
         BarChart::default()
             .data(BarGroup::default().bars(&bars))
@@ -655,7 +749,8 @@ fn render_footer(frame: &mut Frame, area: Rect) {
             key("1-4"),
             hint(" jump   "),
             key("r"),
-            hint(" refresh"),
+            hint(" refresh   "),
+            hint("click tabs to jump"),
         ])),
         area,
     );
@@ -691,7 +786,7 @@ fn render_too_small(frame: &mut Frame, area: Rect) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
-                "keycount",
+                "speedy",
                 Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
@@ -735,7 +830,39 @@ fn dial_angle(progress: f64) -> f64 {
     (220.0 - progress * 260.0) * PI / 180.0
 }
 
-fn draw_boxed_label(context: &mut Context<'_>, label: &str, x_per_cell: f64, y: f64) {
+fn speed_color(kpm: u64) -> Color {
+    if kpm >= 250 {
+        RED
+    } else if kpm >= 150 {
+        ORANGE
+    } else if kpm >= 60 {
+        BLUE
+    } else if kpm > 0 {
+        GREEN
+    } else {
+        MUTED
+    }
+}
+
+fn goal_bar(fraction: f64, width: usize) -> String {
+    let width = width.clamp(6, 18);
+    let filled = (fraction * width as f64).round() as usize;
+    let mut bar = String::with_capacity(width + 2);
+    bar.push('[');
+    for i in 0..width {
+        bar.push(if i < filled { '━' } else { '─' });
+    }
+    bar.push(']');
+    bar
+}
+
+fn draw_boxed_label(
+    context: &mut Context<'_>,
+    label: &str,
+    accent: Color,
+    x_per_cell: f64,
+    y: f64,
+) {
     let half_width = (label.len() as f64 * x_per_cell + 0.12) / 2.0;
     let left = -half_width;
     let right = half_width;
@@ -747,28 +874,28 @@ fn draw_boxed_label(context: &mut Context<'_>, label: &str, x_per_cell: f64, y: 
             y1: top,
             x2: right,
             y2: top,
-            color: MUTED,
+            color: accent,
         },
         CanvasLine {
             x1: left,
             y1: bottom,
             x2: right,
             y2: bottom,
-            color: MUTED,
+            color: accent,
         },
         CanvasLine {
             x1: left,
             y1: bottom,
             x2: left,
             y2: top,
-            color: MUTED,
+            color: accent,
         },
         CanvasLine {
             x1: right,
             y1: bottom,
             x2: right,
             y2: top,
-            color: MUTED,
+            color: accent,
         },
     ] {
         context.draw(&line);
@@ -778,7 +905,7 @@ fn draw_boxed_label(context: &mut Context<'_>, label: &str, x_per_cell: f64, y: 
         y - 0.03,
         Span::styled(
             label.to_owned(),
-            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            Style::default().fg(SILVER).add_modifier(Modifier::BOLD),
         ),
     );
 }
@@ -875,7 +1002,7 @@ mod tests {
         store::{Database, Stats},
     };
 
-    use super::{format_count, percent_change, render, thin_number_art};
+    use super::{format_count, goal_bar, percent_change, render, speed_color, thin_number_art};
 
     #[test]
     fn formats_counts_for_display() {
@@ -917,7 +1044,7 @@ mod tests {
             .collect();
 
         for label in [
-            "keycount",
+            "speedy",
             "Live",
             "KEYBOARD",
             "GROUND SPEED",
@@ -926,5 +1053,21 @@ mod tests {
         ] {
             assert!(output.contains(label), "missing {label:?}\n{output}");
         }
+    }
+
+    #[test]
+    fn speed_colors_follow_zones() {
+        assert_eq!(speed_color(0), super::MUTED);
+        assert_eq!(speed_color(10), super::GREEN);
+        assert_eq!(speed_color(100), super::BLUE);
+        assert_eq!(speed_color(200), super::ORANGE);
+        assert_eq!(speed_color(300), super::RED);
+    }
+
+    #[test]
+    fn goal_bar_fills_proportionally() {
+        assert_eq!(goal_bar(0.0, 8), "[────────]");
+        assert_eq!(goal_bar(1.0, 8), "[━━━━━━━━]");
+        assert_eq!(goal_bar(0.5, 8), "[━━━━────]");
     }
 }
