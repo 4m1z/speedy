@@ -112,6 +112,7 @@ struct Status {
     keys_per_minute: usize,
     active: bool,
     device_count: usize,
+    daily_target: u64,
 }
 
 fn print_status() -> Result<()> {
@@ -125,6 +126,7 @@ fn print_status() -> Result<()> {
         keys_per_minute: recorder.keys_per_minute,
         active: recorder.active,
         device_count: recorder.device_count,
+        daily_target: database.get_daily_target().unwrap_or(app::DAILY_TARGET),
     };
     let stdout = io::stdout();
     let mut output = stdout.lock();
@@ -142,9 +144,7 @@ fn run(tui: &mut Tui, app: &mut App, interrupted: &AtomicBool) -> Result<()> {
                 Event::Key(key) if key.kind == KeyEventKind::Press && handle_key(app, key) => {
                     return Ok(());
                 }
-                Event::Mouse(mouse)
-                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) =>
-                {
+                Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
                     if let Ok(size) = tui.size() {
                         let area = Rect {
                             x: 0,
@@ -204,6 +204,9 @@ fn inset(area: Rect, horizontal: u16, vertical: u16) -> Rect {
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> bool {
+    if app.editing_target {
+        return handle_target_editor_key(app, key);
+    }
     match (key.code, key.modifiers) {
         (KeyCode::Char('c'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => true,
         (KeyCode::Char('q') | KeyCode::Esc, _) => true,
@@ -233,6 +236,50 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::Char('r'), _) => {
             app.refresh_now();
+            false
+        }
+        (KeyCode::Char('t'), _) => {
+            app.start_editing_target();
+            false
+        }
+        _ => false,
+    }
+}
+
+fn handle_target_editor_key(app: &mut App, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Esc => {
+            app.cancel_editing_target();
+            false
+        }
+        KeyCode::Enter => {
+            app.confirm_target();
+            false
+        }
+        KeyCode::Backspace => {
+            app.target_input.pop();
+            app.target_error = None;
+            false
+        }
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            // Keep the input within a reasonable length for a u64 plus separators.
+            let digits = app
+                .target_input
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .count();
+            if digits < 10 {
+                app.target_input.push(c);
+                app.target_error = None;
+            }
+            false
+        }
+        KeyCode::Char(',') | KeyCode::Char('_') | KeyCode::Char(' ') => {
+            // Allow separators for readability (e.g. "10,000"); they are stripped on save.
+            if app.target_input.len() < 14 {
+                app.target_input.push(',');
+                app.target_error = None;
+            }
             false
         }
         _ => false,
@@ -266,12 +313,8 @@ fn start_terminal() -> Result<TerminalSession> {
 
 fn restore_terminal(tui: &mut Tui) -> Result<()> {
     let raw_mode_result = disable_raw_mode().context("failed to disable terminal raw mode");
-    let screen_result = execute!(
-        tui.backend_mut(),
-        DisableMouseCapture,
-        LeaveAlternateScreen
-    )
-    .context("failed to leave alternate screen");
+    let screen_result = execute!(tui.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)
+        .context("failed to leave alternate screen");
     let cursor_result = tui.show_cursor().context("failed to show terminal cursor");
     raw_mode_result.and(screen_result).and(cursor_result)
 }
@@ -296,7 +339,7 @@ fn parse_arguments() -> Result<Command> {
     match argument.as_str() {
         "-h" | "--help" => {
             println!(
-                "speedy {}\n\nPrivate keyboard activity dashboard\n\nUSAGE:\n    speedy           Open the dashboard and start recording\n    speedy --start   Start the background recorder\n    speedy --status  Print machine-readable recorder status\n    speedy --stop    Stop the background recorder\n\nThe recorder continues after the dashboard closes.\n\nKEYS:\n    1/2/3/4     Select a tab (or click the heading)\n    Left/Right  Change tabs\n    r           Refresh now\n    q, Esc      Close the dashboard",
+                "speedy {}\n\nPrivate keyboard activity dashboard\n\nUSAGE:\n    speedy           Open the dashboard and start recording\n    speedy --start   Start the background recorder\n    speedy --status  Print machine-readable recorder status\n    speedy --stop    Stop the background recorder\n\nThe recorder continues after the dashboard closes.\n\nKEYS:\n    1/2/3/4     Select a tab (or click the heading)\n    Left/Right  Change tabs\n    r           Refresh now\n    t           Set daily keypress target\n    q, Esc      Close the dashboard",
                 env!("CARGO_PKG_VERSION")
             );
             std::process::exit(0);

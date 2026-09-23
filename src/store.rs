@@ -90,6 +90,9 @@ pub struct Database {
     connection: Connection,
 }
 
+pub const DEFAULT_DAILY_TARGET: u64 = 10_000;
+const DAILY_TARGET_KEY: &str = "daily_target";
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RecorderStatus {
     pub active: bool,
@@ -241,6 +244,39 @@ impl Database {
         Ok(())
     }
 
+    pub fn get_daily_target(&self) -> Result<u64> {
+        let value: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![DAILY_TARGET_KEY],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed to load daily target")?;
+        let Some(value) = value else {
+            return Ok(DEFAULT_DAILY_TARGET);
+        };
+        match value.trim().parse::<u64>() {
+            Ok(target) if target > 0 => Ok(target),
+            _ => Ok(DEFAULT_DAILY_TARGET),
+        }
+    }
+
+    pub fn set_daily_target(&self, target: u64) -> Result<()> {
+        if target == 0 {
+            return Err(anyhow!("daily target must be a positive number"));
+        }
+        self.connection
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![DAILY_TARGET_KEY, target.to_string()],
+            )
+            .context("failed to save daily target")?;
+        Ok(())
+    }
+
     pub fn migrate_json(&mut self, path: &Path) -> Result<bool> {
         if !path.exists() {
             return Ok(false);
@@ -304,6 +340,10 @@ impl Database {
                       heartbeat INTEGER NOT NULL,
                       device_count INTEGER NOT NULL CHECK (device_count >= 0),
                       keys_per_minute INTEGER NOT NULL CHECK (keys_per_minute >= 0)
+                  );
+                  CREATE TABLE IF NOT EXISTS settings (
+                      key TEXT PRIMARY KEY,
+                      value TEXT NOT NULL
                   );",
             )
             .context("failed to initialize database")
@@ -353,7 +393,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{Database, Stats};
+    use super::{DEFAULT_DAILY_TARGET, Database, Stats};
 
     #[test]
     fn records_press_in_the_correct_hour() {
@@ -449,5 +489,46 @@ mod tests {
         assert_eq!(database.load_stats().unwrap().total_on(date), 12);
         drop(database);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn daily_target_defaults_to_ten_thousand() {
+        let database = Database::in_memory().unwrap();
+
+        assert_eq!(database.get_daily_target().unwrap(), DEFAULT_DAILY_TARGET);
+        assert_eq!(DEFAULT_DAILY_TARGET, 10_000);
+    }
+
+    #[test]
+    fn daily_target_round_trips() {
+        let database = Database::in_memory().unwrap();
+
+        database.set_daily_target(5_000).unwrap();
+        assert_eq!(database.get_daily_target().unwrap(), 5_000);
+
+        database.set_daily_target(20_000).unwrap();
+        assert_eq!(database.get_daily_target().unwrap(), 20_000);
+    }
+
+    #[test]
+    fn daily_target_rejects_zero() {
+        let database = Database::in_memory().unwrap();
+
+        assert!(database.set_daily_target(0).is_err());
+        assert_eq!(database.get_daily_target().unwrap(), DEFAULT_DAILY_TARGET);
+    }
+
+    #[test]
+    fn daily_target_falls_back_when_stored_value_is_invalid() {
+        let database = Database::in_memory().unwrap();
+        database
+            .connection
+            .execute(
+                "INSERT INTO settings (key, value) VALUES ('daily_target', 'oops')",
+                [],
+            )
+            .unwrap();
+
+        assert_eq!(database.get_daily_target().unwrap(), DEFAULT_DAILY_TARGET);
     }
 }

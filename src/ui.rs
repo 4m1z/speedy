@@ -14,7 +14,7 @@ use ratatui::{
     },
 };
 
-use crate::app::{App, DAILY_TARGET, Tab};
+use crate::app::{App, Tab};
 
 const BG: Color = Color::Reset;
 const TEXT: Color = Color::Rgb(174, 176, 190);
@@ -61,6 +61,9 @@ pub fn render(frame: &mut Frame, app: &App) {
         Tab::Records => render_records(frame, page[4], app),
     }
     render_footer(frame, page[5]);
+    if app.editing_target {
+        render_target_editor(frame, area, app);
+    }
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App) {
@@ -160,7 +163,8 @@ fn render_live(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_gauge(frame: &mut Frame, area: Rect, app: &App) {
-    let title = format!(" KEYBOARD  ·  goal {} ", format_count(DAILY_TARGET));
+    let target = app.effective_target();
+    let title = format!(" KEYBOARD  ·  goal {} ", format_count(target));
     let block = panel(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -169,7 +173,7 @@ fn render_gauge(frame: &mut Frame, area: Rect, app: &App) {
     let max_kpm = 400.0;
     let progress = (kpm as f64 / max_kpm).clamp(0.0, 1.0);
     let today = app.stats.total_on(app.today());
-    let goal = today as f64 / DAILY_TARGET as f64 * 100.0;
+    let goal = today as f64 / target as f64 * 100.0;
     let speed = speed_color(kpm);
     let x_per_cell = 2.4 / f64::from(inner.width.max(1));
     let value_label = format!(" {} KPM ", format_count(kpm));
@@ -337,13 +341,14 @@ fn render_gauge(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_today(frame: &mut Frame, area: Rect, app: &App) {
+    let target = app.effective_target();
     let total = app.stats.total_on(app.today());
-    let goal_frac = (total as f64 / DAILY_TARGET as f64).clamp(0.0, 1.0);
-    let number_color = if total >= DAILY_TARGET { GREEN } else { BLUE };
+    let goal_frac = (total as f64 / target as f64).clamp(0.0, 1.0);
+    let number_color = if total >= target { GREEN } else { BLUE };
     let block = panel(format!(
         " Today  ·  {}% of {} ",
-        (total as f64 / DAILY_TARGET as f64 * 100.0) as u64,
-        format_count(DAILY_TARGET)
+        (total as f64 / target as f64 * 100.0) as u64,
+        format_count(target)
     ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -750,10 +755,57 @@ fn render_footer(frame: &mut Frame, area: Rect) {
             hint(" jump   "),
             key("r"),
             hint(" refresh   "),
+            key("t"),
+            hint(" target   "),
             hint("click tabs to jump"),
         ])),
         area,
     );
+}
+
+fn render_target_editor(frame: &mut Frame, area: Rect, app: &App) {
+    use ratatui::widgets::Clear;
+    let width = 46_u16;
+    let height = if app.target_error.is_some() { 7 } else { 6 };
+    let dialog = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width: width.min(area.width),
+        height: height.min(area.height),
+    };
+    frame.render_widget(Clear, dialog);
+    let block = panel(format!(
+        " Daily target · current {} ",
+        format_count(app.effective_target())
+    ));
+    let inner = block.inner(dialog);
+    frame.render_widget(block, dialog);
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Enter a positive number of keypresses:",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(vec![
+            Span::styled("> ", Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{}_", app.target_input),
+                Style::default().fg(SILVER).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ];
+    if let Some(error) = &app.target_error {
+        lines.push(Line::from(Span::styled(
+            error.clone(),
+            Style::default().fg(RED),
+        )));
+    }
+    lines.push(Line::from(vec![
+        key("Enter"),
+        hint(" save   "),
+        key("Esc"),
+        hint(" cancel"),
+    ]));
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_hour_axis(frame: &mut Frame, area: Rect, bars: Rect, bar_width: u16, bar_gap: u16) {
@@ -1069,5 +1121,50 @@ mod tests {
         assert_eq!(goal_bar(0.0, 8), "[────────]");
         assert_eq!(goal_bar(1.0, 8), "[━━━━━━━━]");
         assert_eq!(goal_bar(0.5, 8), "[━━━━────]");
+    }
+
+    #[test]
+    fn live_page_uses_custom_target_for_progress() {
+        use chrono::Local;
+        let database = Database::in_memory().unwrap();
+        database.set_daily_target(2_000).unwrap();
+        let mut app = App::new(Stats::default(), database);
+        assert_eq!(app.daily_target, 2_000);
+        // Simulate 1,000 keys today => 50% of the custom 2,000 target.
+        let today = Local::now().date_naive();
+        app.stats.days.entry(today).or_default().hours[9] = 1_000;
+
+        let mut terminal = Terminal::new(TestBackend::new(86, 48)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let output: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(output.contains("2,000"), "missing custom target\n{output}");
+        assert!(output.contains("50%"), "missing custom progress\n{output}");
+        assert!(!output.contains("10,000"), "stale default target\n{output}");
+    }
+
+    #[test]
+    fn target_editor_overlays_prompt() {
+        let mut terminal = Terminal::new(TestBackend::new(86, 48)).unwrap();
+        let mut app = App::new(Stats::default(), Database::in_memory().unwrap());
+        app.start_editing_target();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let output: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(output.contains("Daily target"), "missing editor\n{output}");
+        assert!(output.contains("positive number"), "missing hint\n{output}");
     }
 }
